@@ -20,8 +20,9 @@ from git import Repo, GitCommandError, RemoteProgress
 from google import genai
 from openai import OpenAI
 from jinja2 import Environment, FileSystemLoader
+import pathlib
 
-VERSION = "0.13.0"
+VERSION = "0.13.0-parse-cve"
 
 BLUE = "\033[94m"
 GREEN = "\033[92m"
@@ -946,6 +947,30 @@ def import_vulnerability_data(file_path, file_type=None):
     return []
 
 
+def import_vulnerability_data_from_dir(dir_path):
+    if not os.path.exists(dir_path):
+        print(f"❌ Error: The DIR '{dir_path}' does not exist.")
+        return []
+    if not os.path.isdir(dir_path):
+        print(f"❌ Error: '{dir_path}' is not a DIR. Use the key --input-dir with the DIR path")
+        return []
+
+    p = pathlib.Path(dir_path, encoding='utf-8').glob('**/*')
+    reports_list = [str(x) for x in p if x.is_file()]
+
+    cve_ids_list = []
+
+    for report_path in reports_list:
+        cve_ids_list.extend(import_file(report_path, parse_cve_in_report))
+
+    unique_cve_ids = list(set(cve_ids_list))
+    print(
+        YELLOW +
+        f"📥 Successfully imported {len(unique_cve_ids)} CVE(s) from '{dir_path}'.\n"
+    )
+    return unique_cve_ids
+
+
 def is_plaintext_cve_list(file_path):
     try:
         with open(file_path, "r") as file:
@@ -961,6 +986,16 @@ def is_plaintext_cve_list(file_path):
 
 def parse_plaintext_cve_list(file):
     return [line.strip().upper() for line in file if is_valid_cve_id(line.strip().upper())]
+
+def parse_cve_in_report(file):
+    cve_pattern = r'CVE-[0-9]{4}-[0-9]{4,}'
+    try:
+        content = file.read()
+        return [cve.upper() for cve in re.findall(cve_pattern, content, re.IGNORECASE)]
+
+    except Exception as e:
+        print(f"❌ Error reading file '{file}': {e}")
+        return []
 
 
 def parse_nessus_file(file):
@@ -1030,7 +1065,9 @@ def is_valid_cve_id(cve_id):
 def generate_filename(cve_ids, extension):
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     cve_part = "_".join(cve_ids[:3]) + ("_and_more" if len(cve_ids) > 3 else "")
-    return f"{timestamp}_{cve_part}_export.{extension}"
+    base_dir = "/results" if os.path.exists('/results') else "."
+    filename = os.path.join(base_dir, f'{timestamp}_{cve_part}_export.{extension}')
+    return filename
 
 
 def datetimeformat(value, format="%Y-%m-%d"):
@@ -1303,7 +1340,7 @@ Further References: {references}
 
 
 def main(cve_ids, export_format=None, import_file=None, import_type=None, ai_provider=None,
-         config_path=None, methods=None, debug=False, fast_mode=False):
+         config_path=None, methods=None, debug=False, fast_mode=False, input_dir=None):
     global config
     config = load_config(config_path=config_path, debug=debug) if config_path else load_config(debug=debug)
 
@@ -1315,6 +1352,12 @@ def main(cve_ids, export_format=None, import_file=None, import_type=None, ai_pro
         cve_ids = import_vulnerability_data(import_file, import_type)
         if not cve_ids:
             print("❌ No valid CVE IDs found in the provided file.")
+            return
+
+    if input_dir:
+        cve_ids = import_vulnerability_data_from_dir(input_dir)
+        if not cve_ids:
+            print("❌ No valid CVE IDs found in the provided DIR.")
             return
 
     if not cve_ids:
@@ -1429,6 +1472,8 @@ def cli():
                         help="Path to a custom configuration file.")
     parser.add_argument("-d", "--debug", action="store_true",
                         help="Enable debug output.")
+    parser.add_argument("--input-dir", type=str,
+                        help="Path to the DIR with SCA-analyzer reports.")
 
     args = parser.parse_args()
 
@@ -1450,7 +1495,8 @@ def cli():
          config_path=args.config,
          methods=args.methods,
          debug=args.debug,
-         fast_mode=args.fast_mode)
+         fast_mode=args.fast_mode,
+         input_dir=args.input_dir)
 
 
 if __name__ == "__main__":
